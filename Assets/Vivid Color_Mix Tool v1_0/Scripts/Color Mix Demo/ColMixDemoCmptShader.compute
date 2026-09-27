@@ -1,0 +1,282 @@
+﻿// Vivid Color Mix -- ComputeShader version by SpRiseMaxChen --- 11.26.2023
+
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel DrawToCanvas
+#pragma kernel InitCanvas
+#pragma kernel RefreshCurDrawingTex
+#pragma kernel DrawToCurTex
+
+#pragma kernel DrawCircle
+#pragma kernel DrawRect
+
+
+// Create a RenderTexture with enableRandomWrite flag and set it
+// with cs.SetTexture
+RWTexture2D<float4> ResultCanvas;
+RWTexture2D<float4> AlreadyDrawTex;
+RWTexture2D<float4> CurDrawingTex;
+
+float4 brushColor;
+float mousePos_x, mousePos_y;
+
+int resolutionX;
+int resolutionY;
+
+bool useVividColorMix;
+
+
+// Variable/function declaration
+static float4 VividColorMix(float3 srgb1, float3 srgb2, float t);
+
+
+[numthreads(16,16,1)]
+void InitCanvas(uint3 id : SV_DispatchThreadID)
+{
+    // TODO: insert actual code here!
+    if(id.x >= (uint)resolutionX || id.y >= (uint)resolutionY)  return;
+
+    ResultCanvas[id.xy] = float4(1,1,1,0);
+    AlreadyDrawTex[id.xy] = float4(1,1,1,0);
+}
+
+
+[numthreads(16,16,1)]
+void RefreshCurDrawingTex(uint3 id : SV_DispatchThreadID)
+{
+    // TODO: insert actual code here!
+    if(id.x >= (uint)resolutionX || id.y >= (uint)resolutionY)  return;
+
+    CurDrawingTex[id.xy] = float4(1,1,1,1);
+}
+
+
+[numthreads(16,16,1)]
+void DrawToCurTex(uint3 id : SV_DispatchThreadID)
+{
+    // TODO: insert actual code here!
+    if(id.x >= (uint)resolutionX || id.y >= (uint)resolutionY)  return;
+
+    float sqr_dis = (id.x-mousePos_x) * (id.x-mousePos_x) + (id.y-mousePos_y) * (id.y-mousePos_y);
+    if(sqr_dis > 180.0) return;
+
+    CurDrawingTex[id.xy] = brushColor;
+
+    float t = CurDrawingTex[id.xy].a;
+
+    float4 col;
+    if(!useVividColorMix)
+        col = AlreadyDrawTex[id.xy] * (1-t) + CurDrawingTex[id.xy] * t; 
+    else
+        col = VividColorMix(AlreadyDrawTex[id.xy].rgb, CurDrawingTex[id.xy].rgb, t);
+
+    ResultCanvas[id.xy] = col;
+
+}
+
+
+[numthreads(16,16,1)]
+void DrawToCanvas (uint3 id : SV_DispatchThreadID)
+{
+    // TODO: insert actual code here!
+    if(id.x >= (uint)resolutionX || id.y >= (uint)resolutionY)  return; 
+    
+    AlreadyDrawTex[id.xy] = ResultCanvas[id.xy];
+}
+
+
+float4 circle_center_SQRradius;       // defined as Vector4(pos_x, pos_y, pos_z, 1)
+float4 rect_topLeftbottomRight;       // defined as Vector4(topleft_x, topleft_y, bottomright_x, bottomright_y)
+
+
+[numthreads(16,16,1)]
+void DrawCircle(uint3 id : SV_DispatchThreadID)
+{
+    // TODO: insert actual code here!
+    if(id.x >= (uint)resolutionX || id.y >= (uint)resolutionY)  return;
+
+    float sqr_dis = (id.x-circle_center_SQRradius.x) * (id.x-circle_center_SQRradius.x) + (id.y-circle_center_SQRradius.y) * (id.y-circle_center_SQRradius.y);
+    if(sqr_dis > circle_center_SQRradius.z) return;
+
+    CurDrawingTex[id.xy] = brushColor;
+
+    float t = CurDrawingTex[id.xy].a; 
+
+    float4 col;
+    if(!useVividColorMix)
+        col = AlreadyDrawTex[id.xy] * (1-t) + CurDrawingTex[id.xy] * t; 
+    else
+        col = VividColorMix(AlreadyDrawTex[id.xy].rgb, CurDrawingTex[id.xy].rgb, t);
+
+    ResultCanvas[id.xy] = col;
+}
+
+
+[numthreads(16,16,1)]
+void DrawRect(uint3 id : SV_DispatchThreadID)
+{
+    // TODO: insert actual code here!
+    if(id.x >= (uint)resolutionX || id.y >= (uint)resolutionY)  return;
+    if(id.x >= (uint)rect_topLeftbottomRight.z || id.x <= (uint)rect_topLeftbottomRight.x)  return;
+    if(id.y >= (uint)rect_topLeftbottomRight.y || id.y <= (uint)rect_topLeftbottomRight.w)  return;
+
+    CurDrawingTex[id.xy] = brushColor;
+
+    float t = CurDrawingTex[id.xy].a; 
+
+    float4 col;
+    if(!useVividColorMix)
+        col = AlreadyDrawTex[id.xy] * (1-t) + CurDrawingTex[id.xy] * t; 
+    else
+        col = VividColorMix(AlreadyDrawTex[id.xy].rgb, CurDrawingTex[id.xy].rgb, t);
+
+    ResultCanvas[id.xy] = col;
+}
+
+
+
+// --------------     Vivid Color-Mix Algorithm with GPU     ------------------
+
+static float GammaCorrection(float srgb01_value)
+{
+    if(srgb01_value < 0.04045)
+        return srgb01_value / 12.92;
+    else  
+        return pow(abs(srgb01_value + 0.055) / 1.055, 2.4);
+}
+
+
+static float Invert_GammaCorrection(float lrgb_value)
+{
+     if(lrgb_value < 0.0031308)
+        return lrgb_value * 12.92;
+     else 
+        return 1.055 * pow(abs(lrgb_value), 1.0 / 2.4) - 0.055;
+}
+
+
+static float3 sRGB01_To_lRGB(float3 srgb01)
+{
+    float r = saturate(GammaCorrection(saturate(srgb01.r)));
+    float g = saturate(GammaCorrection(saturate(srgb01.g)));
+    float b = saturate(GammaCorrection(saturate(srgb01.b)));
+
+    return float3(r,g,b);
+}
+
+
+static float3 sRGB0255_To_lRGB(int3 srgb0255)
+{
+    float r = GammaCorrection((float)srgb0255.r / 255.0);
+    float g = GammaCorrection((float)srgb0255.g / 255.0);
+    float b = GammaCorrection((float)srgb0255.b / 255.0);
+
+    return float3(r,g,b);
+}
+
+
+static float3 lRGB_To_sRGB01(float3 lrgb)
+{
+    float r = saturate(Invert_GammaCorrection(saturate(lrgb.r)));
+    float g = saturate(Invert_GammaCorrection(saturate(lrgb.g)));
+    float b = saturate(Invert_GammaCorrection(saturate(lrgb.b)));
+
+    return float3(r,g,b);
+}
+
+
+static int3 lRGB_To_sRGB0255(float3 lrgb)
+{
+    int r = saturate(Invert_GammaCorrection(lrgb.r)) * 255.0 + 0.5;
+    int g = saturate(Invert_GammaCorrection(lrgb.g)) * 255.0 + 0.5;
+    int b = saturate(Invert_GammaCorrection(lrgb.b)) * 255.0 + 0.5;
+
+    return int3(r,g,b);
+}
+
+static float4 VividColorMix(float3 srgb1, float3 srgb2, float t)
+{
+
+    float3 lrgb1 = sRGB01_To_lRGB(srgb1.rgb + float3(0.0039, 0.0039, 0.0039));
+    float3 lrgb2 = sRGB01_To_lRGB(srgb2.rgb + float3(0.0039, 0.0039, 0.0039));
+
+    float ref1[9], ref2[9];
+    ref1[0] = lrgb1.r * 0.031470668 + lrgb1.g * 0.009535800 + lrgb1.b * 0.979033300;
+    ref2[0] = lrgb2.r * 0.031470668 + lrgb2.g * 0.009535800 + lrgb2.b * 0.979033300;
+    ref1[1] = lrgb1.r * 0.026872600 + lrgb1.g * 0.011546740 + lrgb1.b * 0.975177940;
+    ref2[1] = lrgb2.r * 0.026872600 + lrgb2.g * 0.011546740 + lrgb2.b * 0.975177940;
+    ref1[2] = lrgb1.r * 0.009516875 + lrgb1.g * 0.210915490 + lrgb1.b * 0.768040000;
+    ref2[2] = lrgb2.r * 0.009516875 + lrgb2.g * 0.210915490 + lrgb2.b * 0.768040000;
+    ref1[3] = lrgb1.r * 0.005099400 + lrgb1.g * 0.952086600 + lrgb1.b * 0.066814830;
+    ref2[3] = lrgb2.r * 0.005099400 + lrgb2.g * 0.952086600 + lrgb2.b * 0.066814830;
+    ref1[4] = lrgb1.r * 0.051073000 + lrgb1.g * 0.893323360 + lrgb1.b * 0.013839334;
+    ref2[4] = lrgb2.r * 0.051073000 + lrgb2.g * 0.893323360 + lrgb2.b * 0.013839334;
+    ref1[5] = lrgb1.r * 0.654535000 + lrgb1.g * 0.322625000 + lrgb1.b * 0.013698500;
+    ref2[5] = lrgb2.r * 0.654535000 + lrgb2.g * 0.322625000 + lrgb2.b * 0.013698500;
+    ref1[6] = lrgb1.r * 0.971049960 + lrgb1.g * 0.049603604 + lrgb1.b * 0.014988000;
+    ref2[6] = lrgb2.r * 0.971049960 + lrgb2.g * 0.049603604 + lrgb2.b * 0.014988000;
+    ref1[7] = lrgb1.r * 0.985130000 + lrgb1.g * 0.028878666 + lrgb1.b * 0.015551000;
+    ref2[7] = lrgb2.r * 0.985130000 + lrgb2.g * 0.028878666 + lrgb2.b * 0.015551000;
+    ref1[8] = lrgb1.r * 0.985580000 + lrgb1.g * 0.028120285 + lrgb1.b * 0.015592285;
+    ref2[8] = lrgb2.r * 0.985580000 + lrgb2.g * 0.028120285 + lrgb2.b * 0.015592285;
+    
+
+    float dis1 = lrgb1.r * lrgb1.r + lrgb1.g * lrgb1.g + lrgb1.b * lrgb1.b + 0.01;
+    float dis2 = lrgb2.r * lrgb2.r + lrgb2.g * lrgb2.g + lrgb2.b * lrgb2.b + 0.01;
+    float rate = dis1 / dis2;
+    float lerp_t = t * t / (rate * (1 - t) * (1 - t) + t * t);
+
+
+    float Rm = 0, Rprime = 0, X = 0, Y = 0, Z = 0;
+
+    Rm = (1-lerp_t) * (1-ref1[0]) * (1-ref1[0]) / (2 * ref1[0]) + lerp_t * (1-ref2[0]) * (1-ref2[0]) / (2 * ref2[0]);
+    Rprime = 1 + Rm - sqrt(Rm * Rm + 2 * Rm);
+    X += Rprime * 0.00140467;
+    Y += Rprime * 0.00003906;
+    Z += Rprime * 0.00665496;
+    Rm = (1-lerp_t) * (1-ref1[1]) * (1-ref1[1]) / (2 * ref1[1]) + lerp_t * (1-ref2[1]) * (1-ref2[1]) / (2 * ref2[1]);
+    Rprime = 1 + Rm - sqrt(Rm * Rm + 2 * Rm);
+    X += Rprime * 0.11071678;
+    Y += Rprime * 0.00789945;
+    Z += Rprime * 0.55824870;
+    Rm = (1-lerp_t) * (1-ref1[2]) * (1-ref1[2]) / (2 * ref1[2]) + lerp_t * (1-ref2[2]) * (1-ref2[2]) / (2 * ref2[2]);
+    Rprime = 1 + Rm - sqrt(Rm * Rm + 2 * Rm);
+    X += Rprime * 0.06743840;
+    Y += Rprime * 0.05324494;
+    Z += Rprime * 0.46310344;
+    Rm = (1-lerp_t) * (1-ref1[3]) * (1-ref1[3]) / (2 * ref1[3]) + lerp_t * (1-ref2[3]) * (1-ref2[3]) / (2 * ref2[3]);
+    Rprime = 1 + Rm - sqrt(Rm * Rm + 2 * Rm);
+    X += Rprime * 0.09595849;
+    Y += Rprime * 0.43517935;
+    Z += Rprime * 0.05920551;
+    Rm = (1-lerp_t) * (1-ref1[4]) * (1-ref1[4]) / (2 * ref1[4]) + lerp_t * (1-ref2[4]) * (1-ref2[4]) / (2 * ref2[4]);
+    Rprime = 1 + Rm - sqrt(Rm * Rm + 2 * Rm);
+    X += Rprime * 0.20877825;
+    Y += Rprime * 0.25978968;
+    Z += Rprime * 0.00071003;
+    Rm = (1-lerp_t) * (1-ref1[5]) * (1-ref1[5]) / (2 * ref1[5]) + lerp_t * (1-ref2[5]) * (1-ref2[5]) / (2 * ref2[5]);
+    Rprime = 1 + Rm - sqrt(Rm * Rm + 2 * Rm);
+    X += Rprime * 0.17659217;
+    Y += Rprime * 0.11726809;
+    Z += Rprime * 0.00016044;
+    Rm = (1-lerp_t) * (1-ref1[6]) * (1-ref1[6]) / (2 * ref1[6]) + lerp_t * (1-ref2[6]) * (1-ref2[6]) / (2 * ref2[6]);
+    Rprime = 1 + Rm - sqrt(Rm * Rm + 2 * Rm);
+    X += Rprime * 0.26348150;
+    Y += Rprime * 0.11711134;
+    Z += Rprime * 0.00005012;
+    Rm = (1-lerp_t) * (1-ref1[7]) * (1-ref1[7]) / (2 * ref1[7]) + lerp_t * (1-ref2[7]) * (1-ref2[7]) / (2 * ref2[7]);
+    Rprime = 1 + Rm - sqrt(Rm * Rm + 2 * Rm);
+    X += Rprime * 0.02278559;
+    Y += Rprime * 0.00838078;
+    Rm = (1-lerp_t) * (1-ref1[8]) * (1-ref1[8]) / (2 * ref1[8]) + lerp_t * (1-ref2[8]) * (1-ref2[8]) / (2 * ref2[8]);
+    Rprime = 1 + Rm - sqrt(Rm * Rm + 2 * Rm);
+    X += Rprime * 0.00300794;
+    Y += Rprime * 0.00108706;
+
+
+    float R = ( 3.2406 * X - 1.5372 * Y - 0.4986 * Z);
+    float G = (-0.9689 * X + 1.8758 * Y + 0.0415 * Z);
+    float B = ( 0.0557 * X - 0.2040 * Y + 1.0570 * Z);
+
+    float3 col = lRGB_To_sRGB01(float3(R, G, B));
+    return float4(col, 1);
+}
